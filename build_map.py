@@ -95,20 +95,59 @@ def build_map(points3D, descriptors, min_views):
     return map_points
 
 
-def aggregate_mean(map_points, normalize=True):
-    descs = []
-    xyzs = []
+def select_diverse_descriptors(descs_list, max_k=4):
+    """
+    FIX (Bug 1): Instead of collapsing all observations into one mean vector
+    (which loses viewpoint diversity), we keep up to max_k descriptors that
+    are maximally spread from each other via greedy farthest-point selection.
 
-    for mp in map_points.values():
-        d = np.mean(mp.descs, axis=0)
+    This means a 3D point seen from very different angles will have multiple
+    representatives in the index, dramatically improving match recall.
+    """
+    descs = np.array(descs_list, dtype=np.float32)
 
-        if normalize:
-            d = d / (np.linalg.norm(d) + 1e-8)
+    if len(descs) <= max_k:
+        return descs
 
-        descs.append(d.astype(np.float32))
-        xyzs.append(mp.xyz.astype(np.float32))
+    # Greedy farthest-point sampling
+    selected = [0]
+    for _ in range(max_k - 1):
+        # Distance from each descriptor to the nearest already-selected one
+        dists = np.array([
+            min(np.linalg.norm(descs[i] - descs[s]) for s in selected)
+            for i in range(len(descs))
+            if i not in selected
+        ])
+        remaining = [i for i in range(len(descs)) if i not in selected]
+        selected.append(remaining[np.argmax(dists)])
 
-    return np.vstack(descs), np.vstack(xyzs)
+    return descs[selected]
+
+
+def aggregate_descriptors(map_points, normalize=True, max_k=4):
+    """
+    FIX (Bug 1): Return one row per (point, descriptor) pair instead of one
+    row per point. The returned point_ids array maps each descriptor row back
+    to its 3D point so localize.py can look up xyzs[idx_db] correctly.
+    """
+    all_descs = []
+    all_xyzs = []
+    all_pids = []
+
+    for pid, mp in map_points.items():
+        diverse = select_diverse_descriptors(mp.descs, max_k=max_k)
+
+        for d in diverse:
+            if normalize:
+                d = d / (np.linalg.norm(d) + 1e-8)
+            all_descs.append(d.astype(np.float32))
+            all_xyzs.append(mp.xyz.astype(np.float32))
+            all_pids.append(pid)
+
+    return (
+        np.vstack(all_descs),   # (M, 128)  — M >= N (multiple descs per point)
+        np.vstack(all_xyzs),    # (M, 3)    — xyz repeated for each descriptor
+    )
 
 
 # =============================
@@ -124,8 +163,10 @@ def main():
                         help="Path to COLMAP database.db")
     parser.add_argument("--output_path", required=True,
                         help="Output .npz file")
-    parser.add_argument("--min_views", type=int, default=2,
-                        help="Minimum observations per 3D point")
+    parser.add_argument("--min_views", type=int, default=3,
+                        help="Minimum observations per 3D point (raised from 2 to 3)")
+    parser.add_argument("--max_descs_per_point", type=int, default=4,
+                        help="Max diverse descriptors to keep per 3D point")
     parser.add_argument("--no_normalize", action="store_true",
                         help="Disable descriptor normalization")
 
@@ -144,10 +185,11 @@ def main():
 
     print(f"Valid map points: {len(map_points)}")
 
-    print("Aggregating descriptors...")
-    descs, xyzs = aggregate_mean(
+    print("Aggregating descriptors (diverse multi-descriptor per point)...")
+    descs, xyzs = aggregate_descriptors(
         map_points,
-        normalize=not args.no_normalize
+        normalize=not args.no_normalize,
+        max_k=args.max_descs_per_point,
     )
 
     print("Saving output...")
@@ -156,6 +198,7 @@ def main():
     print(f"Saved to {args.output_path}")
     print(f"xyzs shape: {xyzs.shape}")
     print(f"descs shape: {descs.shape}")
+    print(f"(Multiple rows per 3D point — each descriptor indexes back to its xyz)")
 
 
 if __name__ == "__main__":
