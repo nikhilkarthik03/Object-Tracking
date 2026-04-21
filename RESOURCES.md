@@ -46,7 +46,12 @@ For each pixel in a neighbourhood around the keypoint, compute gradient magnitud
 
 $$m(x,y) = \sqrt{\bigl[L(x{+}1,y) - L(x{-}1,y)\bigr]^2 + \bigl[L(x,y{+}1) - L(x,y{-}1)\bigr]^2}$$
 
-$$\theta(x,y) = \operatorname{atan2}\!\bigl(L(x,y{+}1) - L(x,y{-}1),\ L(x{+}1,y) - L(x{-}1,y)\bigr)$$
+$$
+\theta(x,y) = \mathrm{atan2}\bigl(
+L(x,y+1) - L(x,y-1),\ 
+L(x+1,y) - L(x-1,y)
+\bigr)
+$$
 
 Build a 36-bin orientation histogram weighted by $m(x,y)$ and a Gaussian window of scale $1.5\sigma$. The dominant peak direction becomes the canonical orientation, making the descriptor rotation-invariant.
 
