@@ -1,438 +1,353 @@
 # Resources
 
-Mathematical foundations behind every step of the pipeline. No hand-waving.
-
----
-
 ## COLMAP — Structure from Motion (SfM)
 
-COLMAP implements incremental SfM. The goal is: given N unordered images, recover the 3D structure of the scene and the 6-DoF camera pose for every image simultaneously.
-
-### Step 1 — Feature extraction
-
-COLMAP uses SIFT (Scale-Invariant Feature Transform). For each image `I`, detect keypoints and compute 128-dimensional descriptors.
-
-**Scale space extrema detection**
-
-Build a Gaussian scale space by convolving the image with Gaussians at increasing σ:
-
-```
-L(x, y, σ) = G(x, y, σ) * I(x, y)
-
-where G(x, y, σ) = (1 / 2πσ²) · exp(-(x² + y²) / 2σ²)
-```
-
-Difference of Gaussians (DoG) approximates the Laplacian of Gaussian:
-
-```
-D(x, y, σ) = L(x, y, kσ) - L(x, y, σ)
-```
-
-Keypoints are local extrema (maxima and minima) of D across both space (x, y) and scale σ. A candidate (x, y, σ) is a keypoint if D(x, y, σ) > all 26 neighbours in the 3×3×3 spatial-scale neighbourhood.
-
-**Sub-pixel refinement**
-
-Fit a 3D quadratic to the DoG values around the candidate using a Taylor expansion:
-
-```
-D(x) ≈ D + (∂D/∂x)ᵀ x + (1/2) xᵀ (∂²D/∂x²) x
-
-where x = (Δx, Δy, Δσ)ᵀ
-```
-
-Set ∂D/∂x = 0 and solve:
-
-```
-x̂ = -(∂²D/∂x²)⁻¹ (∂D/∂x)
-```
-
-The refined keypoint location is the original candidate shifted by x̂. Discard if |D(x̂)| < threshold (low contrast) or if the ratio of principal curvatures > r (edge response).
-
-**Orientation assignment**
-
-Compute gradient magnitude and orientation for each pixel in a neighbourhood around the keypoint:
-
-```
-m(x, y) = sqrt[(L(x+1,y) - L(x-1,y))² + (L(x,y+1) - L(x,y-1))²]
-θ(x, y) = atan2(L(x,y+1) - L(x,y-1),  L(x+1,y) - L(x-1,y))
-```
-
-Build a 36-bin orientation histogram weighted by m(x,y) and a Gaussian window. The dominant peak gives the keypoint orientation. This makes the descriptor rotation-invariant.
-
-**Descriptor computation**
-
-Rotate a 16×16 patch around the keypoint to the dominant orientation. Divide into a 4×4 grid of 4×4 cells. In each cell, compute an 8-bin gradient orientation histogram. Concatenate: 4×4×8 = 128 dimensions. Normalize to unit length, clamp values > 0.2, renormalize. This gives illumination invariance.
+COLMAP implements incremental SfM. The goal is: given $N$ unordered images, simultaneously recover the 3D structure of the scene and the 6-DoF camera pose for every image.
 
 ---
 
-### Step 2 — Feature matching
+### Step 1 — Feature Extraction (SIFT)
 
-For every pair of images (i, j), find putative correspondences by comparing SIFT descriptors.
+#### Scale-space construction
 
-**Nearest-neighbour search**
+Build a Gaussian scale space by convolving image $I$ with Gaussians at increasing $\sigma$:
 
-For descriptor `d_a` in image i, find its nearest (`d_1`) and second-nearest (`d_2`) in image j using L2 distance:
+$$L(x, y, \sigma) = G(x, y, \sigma) \ast I(x, y)$$
 
-```
-||d_a - d_1||₂ < ratio · ||d_a - d_2||₂
-```
+where the Gaussian kernel is:
 
-Lowe's ratio test with ratio=0.8. A match is accepted only if the nearest neighbour is significantly closer than the second-nearest. This rejects ambiguous matches where two database descriptors are similarly close.
+$$G(x, y, \sigma) = \frac{1}{2\pi\sigma^2} \exp\!\left(-\frac{x^2 + y^2}{2\sigma^2}\right)$$
 
-**Exhaustive vs vocabulary tree matching**
+The **Difference of Gaussians** (DoG) approximates the Laplacian of Gaussian $\sigma^2 \nabla^2 G$ and is far cheaper to compute:
 
-COLMAP supports two strategies:
-- Exhaustive: O(N²) pairs, compare all descriptors in all image pairs. Used for small datasets (<500 images).
-- Vocabulary tree: Cluster all descriptors into a hierarchical tree (k-means at each level). Each descriptor is assigned a visual word by traversing the tree. Images sharing many visual words are candidate match pairs. O(N log N).
+$$D(x, y, \sigma) = L(x, y, k\sigma) - L(x, y, \sigma)$$
+
+Keypoints are local extrema of $D$ across both space $(x,y)$ and scale $\sigma$. A candidate $(x, y, \sigma)$ is accepted if $D(x,y,\sigma)$ is greater (or less) than all 26 neighbours in its $3 \times 3 \times 3$ spatial-scale neighbourhood.
+
+#### Sub-pixel refinement
+
+Fit a 3D quadratic to $D$ around the candidate via a second-order Taylor expansion:
+
+$$D(\mathbf{x}) \approx D + \frac{\partial D}{\partial \mathbf{x}}^\top \mathbf{x} + \frac{1}{2}\mathbf{x}^\top \frac{\partial^2 D}{\partial \mathbf{x}^2} \mathbf{x}, \qquad \mathbf{x} = (\Delta x,\, \Delta y,\, \Delta\sigma)^\top$$
+
+Setting $\partial D / \partial \mathbf{x} = \mathbf{0}$ and solving:
+
+$$\hat{\mathbf{x}} = -\left(\frac{\partial^2 D}{\partial \mathbf{x}^2}\right)^{-1} \frac{\partial D}{\partial \mathbf{x}}$$
+
+The refined keypoint location is the original candidate shifted by $\hat{\mathbf{x}}$. Discard if $|D(\hat{\mathbf{x}})| < \tau_c$ (low contrast) or if the ratio of principal curvatures of $D$ exceeds $r$ (on an edge, not a corner):
+
+$$\frac{(H_{11} + H_{22})^2}{H_{11}H_{22} - H_{12}^2} > \frac{(r+1)^2}{r}, \qquad H = \frac{\partial^2 D}{\partial \mathbf{x}^2}\bigg|_{xy}$$
+
+COLMAP uses $r = 10$, $\tau_c = 0.01$.
+
+#### Orientation assignment
+
+For each pixel in a neighbourhood around the keypoint, compute gradient magnitude and orientation:
+
+$$m(x,y) = \sqrt{\bigl[L(x{+}1,y) - L(x{-}1,y)\bigr]^2 + \bigl[L(x,y{+}1) - L(x,y{-}1)\bigr]^2}$$
+
+$$\theta(x,y) = \operatorname{atan2}\!\bigl(L(x,y{+}1) - L(x,y{-}1),\ L(x{+}1,y) - L(x{-}1,y)\bigr)$$
+
+Build a 36-bin orientation histogram weighted by $m(x,y)$ and a Gaussian window of scale $1.5\sigma$. The dominant peak direction becomes the canonical orientation, making the descriptor rotation-invariant.
+
+#### Descriptor computation
+
+Rotate a $16 \times 16$ patch to the canonical orientation. Divide into a $4 \times 4$ grid of $4 \times 4$ cells. In each cell, compute an 8-bin gradient orientation histogram. Concatenate all cells:
+
+$$\mathbf{d} \in \mathbb{R}^{4 \times 4 \times 8} = \mathbb{R}^{128}$$
+
+Normalise to unit length, clamp values $> 0.2$, renormalise. Clamping suppresses non-linear illumination effects.
 
 ---
 
-### Step 3 — Geometric verification (RANSAC + Fundamental/Essential matrix)
+### Step 2 — Feature Matching
 
-Putative matches contain many outliers. Geometric verification finds the geometrically consistent subset.
+For every image pair $(i, j)$, find putative correspondences by comparing SIFT descriptors.
 
-**The epipolar constraint**
+#### Lowe's ratio test
 
-For a point `x` in image i and its correspondence `x'` in image j:
+For descriptor $\mathbf{d}_a$ in image $i$, find its nearest $\mathbf{d}_1$ and second-nearest $\mathbf{d}_2$ in image $j$ under the $\ell_2$ distance. Accept the match only if:
 
-```
-x'ᵀ F x = 0
-```
+$$\|\mathbf{d}_a - \mathbf{d}_1\|_2 < r \cdot \|\mathbf{d}_a - \mathbf{d}_2\|_2, \qquad r = 0.8$$
 
-where F ∈ ℝ³ˣ³ is the fundamental matrix (rank 2, 7 DOF). If camera intrinsics K are known:
+This rejects ambiguous matches where two database descriptors are similarly close — the root cause of most false matches in low-texture regions.
 
-```
-x'ᵀ E x = 0,   where E = Kᵀ F K   (Essential matrix, 5 DOF)
-```
+#### Matching strategy
 
-E encodes the relative rotation R and translation t between the two cameras:
+| Strategy | Complexity | When to use |
+|---|---|---|
+| Exhaustive | $O(N^2)$ image pairs | $N < 500$ images |
+| Vocabulary tree | $O(N \log N)$ | $N \geq 500$ images |
 
-```
-E = [t]× R
+The vocabulary tree clusters all descriptors via hierarchical $k$-means. Each descriptor is assigned a visual word by traversing the tree in $O(\log N)$. Images sharing many visual words are candidate match pairs.
 
-where [t]× is the skew-symmetric matrix of t:
-[t]× = [ 0   -t_z  t_y ]
-       [ t_z   0  -t_x ]
-       [-t_y  t_x   0  ]
-```
+---
 
-**RANSAC loop for F/E estimation**
+### Step 3 — Geometric Verification (RANSAC + Epipolar Geometry)
 
-```
-for i in range(max_iterations):
-    sample = random.sample(matches, 7)     # 7-point algorithm for F
-    F_candidates = estimate_F(sample)      # up to 3 solutions
-    for F in F_candidates:
-        inliers = [m for m in matches if |x'ᵀ F x| < threshold]
-    keep F with most inliers
-```
+Putative matches contain many outliers from the ratio test. Geometric verification finds the largest geometrically-consistent inlier set.
 
-Iteration count to achieve probability p that at least one sample is outlier-free:
+#### The epipolar constraint
 
-```
-N = log(1 - p) / log(1 - (1 - ε)^s)
+For a point $\mathbf{x}$ in image $i$ and its correspondence $\mathbf{x}'$ in image $j$ (homogeneous 2D coordinates):
 
-where ε = outlier fraction, s = sample size (7 for F, 5 for E)
-```
+$${\mathbf{x}'}^\top \mathbf{F}\, \mathbf{x} = 0$$
 
-COLMAP defaults: p=0.9999, threshold=4px Sampson distance.
+where $\mathbf{F} \in \mathbb{R}^{3 \times 3}$ is the **fundamental matrix** (rank 2, 7 DOF). When camera intrinsics $\mathbf{K}$ are known, the **essential matrix** $\mathbf{E}$ (5 DOF) carries only the extrinsic information:
 
-**Sampson distance** (first-order approximation to reprojection error, cheaper to compute):
+$${\mathbf{x}'}^\top \mathbf{E}\, \mathbf{x} = 0, \qquad \mathbf{E} = \mathbf{K}^\top \mathbf{F}\, \mathbf{K}$$
 
-```
-d_S(x, x') = (x'ᵀ F x)² / [(Fx)_1² + (Fx)_2² + (Fᵀx')_1² + (Fᵀx')_2²]
-```
+$\mathbf{E}$ decomposes into the relative rotation $\mathbf{R}$ and translation $\mathbf{t}$ between the two cameras:
 
-**Recovering R, t from E**
+$$\mathbf{E} = [\mathbf{t}]_\times \mathbf{R}$$
 
-SVD decompose E = UΣVᵀ. There are 4 candidate (R, t) pairs:
+where $[\mathbf{t}]_\times$ is the skew-symmetric cross-product matrix:
 
-```
-R₁ = U W Vᵀ,   t₁ =  U[:,2]
-R₂ = U W Vᵀ,   t₂ = -U[:,2]
-R₃ = U Wᵀ Vᵀ,  t₃ =  U[:,2]
-R₄ = U Wᵀ Vᵀ,  t₄ = -U[:,2]
+$$[\mathbf{t}]_\times = \begin{pmatrix} 0 & -t_z & t_y \\ t_z & 0 & -t_x \\ -t_y & t_x & 0 \end{pmatrix}$$
 
-where W = [0 -1 0; 1 0 0; 0 0 1]
-```
+#### Sampson distance
 
-Pick the solution where the most triangulated points have positive depth in both cameras (cheirality check).
+The algebraic error $|{\mathbf{x}'}^\top \mathbf{F}\mathbf{x}|$ is not in pixel units. The first-order geometric approximation (Sampson distance) is cheap to compute and used as the RANSAC inlier threshold:
+
+$$d_S(\mathbf{x}, \mathbf{x}') = \frac{\bigl({\mathbf{x}'}^\top \mathbf{F}\mathbf{x}\bigr)^2}{(\mathbf{F}\mathbf{x})_1^2 + (\mathbf{F}\mathbf{x})_2^2 + (\mathbf{F}^\top\mathbf{x}')_1^2 + (\mathbf{F}^\top\mathbf{x}')_2^2}$$
+
+COLMAP threshold: $d_S < 4$ px. Confidence: $p = 0.9999$.
+
+#### RANSAC iteration count
+
+To achieve probability $p$ that at least one sample of size $s$ is entirely free of outliers (outlier fraction $\varepsilon$):
+
+$$N = \frac{\log(1 - p)}{\log\!\bigl(1 - (1-\varepsilon)^s\bigr)}$$
+
+For $\mathbf{F}$: $s = 7$ (7-point algorithm, up to 3 solutions). For $\mathbf{E}$: $s = 5$ (5-point algorithm).
+
+#### Recovering $\mathbf{R},\, \mathbf{t}$ from $\mathbf{E}$
+
+SVD decompose $\mathbf{E} = \mathbf{U}\boldsymbol{\Sigma}\mathbf{V}^\top$. There are 4 candidate solutions:
+
+$$\mathbf{W} = \begin{pmatrix} 0 & -1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & 1 \end{pmatrix}$$
+
+$$(\mathbf{R}_1,\, \mathbf{t}_1) = \bigl(\mathbf{U}\mathbf{W}\mathbf{V}^\top,\ +\mathbf{u}_3\bigr), \qquad (\mathbf{R}_2,\, \mathbf{t}_2) = \bigl(\mathbf{U}\mathbf{W}\mathbf{V}^\top,\ -\mathbf{u}_3\bigr)$$
+
+$$(\mathbf{R}_3,\, \mathbf{t}_3) = \bigl(\mathbf{U}\mathbf{W}^\top\mathbf{V}^\top,\ +\mathbf{u}_3\bigr), \qquad (\mathbf{R}_4,\, \mathbf{t}_4) = \bigl(\mathbf{U}\mathbf{W}^\top\mathbf{V}^\top,\ -\mathbf{u}_3\bigr)$$
+
+where $\mathbf{u}_3$ is the third column of $\mathbf{U}$. The correct solution is the one where the most triangulated points have **positive depth** in both cameras (cheirality check).
 
 ---
 
 ### Step 4 — Triangulation
 
-Given two (or more) calibrated cameras with known poses, find the 3D point P that projects to observed 2D points x_i.
+Given two or more calibrated cameras with known poses, find the 3D point $\mathbf{X}$ that projects to observed 2D points $\{\mathbf{x}_i\}$.
 
-**The projection model**
+#### Projection model
 
-```
-λ x = K [R | t] X
+$$\lambda_i\, \mathbf{x}_i = \mathbf{K}_i\,[\mathbf{R}_i \mid \mathbf{t}_i]\, \mathbf{X}$$
 
-where:
-  X = (X, Y, Z, 1)ᵀ  — homogeneous 3D point
-  x = (u, v, 1)ᵀ     — homogeneous 2D observation
-  λ = depth (scale factor)
-  K = camera intrinsics
-  [R | t] = camera extrinsics (3×4)
-```
+where $\mathbf{X} = (X, Y, Z, 1)^\top$ is the homogeneous 3D point, $\mathbf{x}_i = (u, v, 1)^\top$ is the homogeneous 2D observation, and $\lambda_i$ is an unknown depth scale. Let $\mathbf{P}_i = \mathbf{K}_i[\mathbf{R}_i \mid \mathbf{t}_i] \in \mathbb{R}^{3 \times 4}$ be the projection matrix.
 
-Let P_i = K_i [R_i | t_i] be the 3×4 projection matrix for camera i. For two views:
+#### Direct Linear Transform (DLT)
 
-```
-x₁ × (P₁ X) = 0
-x₂ × (P₂ X) = 0
-```
+The cross-product $\mathbf{x}_i \times (\mathbf{P}_i \mathbf{X}) = \mathbf{0}$ eliminates $\lambda_i$ and gives 2 independent linear equations per view (the third is redundant):
 
-Each cross-product gives 2 independent equations (the third is linearly dependent). Stack for N views:
+$$\begin{pmatrix} \mathbf{p}_{i,3}^\top X\, u_i - \mathbf{p}_{i,1}^\top \mathbf{X} \\ \mathbf{p}_{i,3}^\top X\, v_i - \mathbf{p}_{i,2}^\top \mathbf{X} \end{pmatrix} = \mathbf{0}$$
 
-```
-A X = 0,  where A ∈ ℝ^(2N × 4)
-```
+Stack for $N$ views to get the homogeneous linear system:
 
-Solve via SVD: X = last column of V in A = UΣVᵀ. This is the Direct Linear Transform (DLT).
+$$\mathbf{A}\mathbf{X} = \mathbf{0}, \qquad \mathbf{A} \in \mathbb{R}^{2N \times 4}$$
 
-**Optimal triangulation (minimising reprojection error)**
+Solve via SVD $\mathbf{A} = \mathbf{U}\boldsymbol{\Sigma}\mathbf{V}^\top$: the solution is the last column of $\mathbf{V}$ (right singular vector corresponding to the smallest singular value).
 
-DLT is not optimal under noise. Minimise:
+#### Optimal triangulation
 
-```
-min_X  Σᵢ ||xᵢ - π(P_i X)||²
+DLT minimises an algebraic error, not the reprojection error, so it is not statistically optimal under image noise. The correct objective is:
 
-where π(y) = (y₁/y₃, y₂/y₃) is the perspective division
-```
+$$\min_{\mathbf{X}} \sum_i \left\|\mathbf{x}_i - \pi(\mathbf{P}_i \mathbf{X})\right\|^2$$
 
-Solved iteratively (Levenberg-Marquardt) or in closed form for N=2 (Hartley-Sturm).
+where $\pi(\mathbf{y}) = (y_1/y_3,\, y_2/y_3)^\top$ is the perspective division. Solved iteratively with Levenberg-Marquardt, or in closed form for $N=2$ via the Hartley-Sturm algorithm.
 
-**Reprojection error**
+#### Reprojection error
 
-For a 3D point X and its observed 2D point x_i in camera i:
+$$e_i = \left\|\mathbf{x}_i - \pi(\mathbf{P}_i \mathbf{X})\right\|_2 \quad \text{(pixels)}$$
 
-```
-e_i = x_i - π(P_i X)
-reprojection_error = ||e_i||₂  (pixels)
-```
-
-COLMAP discards triangulated points with reprojection error > 4px.
+COLMAP discards triangulated points with $e_i > 4$ px in any view.
 
 ---
 
 ### Step 5 — Bundle Adjustment
 
-Bundle Adjustment (BA) is the core optimization of SfM. Jointly refine all camera poses {R_i, t_i}, intrinsics {K_i}, and 3D points {X_j} to minimise total reprojection error:
+Bundle Adjustment (BA) is the core optimisation of SfM. It jointly refines all camera poses $\{\mathbf{R}_i, \mathbf{t}_i\}$, intrinsics $\{\mathbf{K}_i\}$, and 3D points $\{\mathbf{X}_j\}$ to minimise total reprojection error:
 
-```
-min_{R,t,K,X}  Σᵢ Σⱼ  w_ij · ρ(||x_ij - π(P_i X_j)||²)
+$$\min_{\mathbf{R},\,\mathbf{t},\,\mathbf{K},\,\mathbf{X}} \sum_i \sum_j w_{ij}\; \rho\!\left(\left\|\mathbf{x}_{ij} - \pi(\mathbf{P}_i \mathbf{X}_j)\right\|^2\right)$$
 
-where:
-  w_ij = 1 if point j is visible in image i, 0 otherwise
-  ρ = robust loss (Huber or Cauchy) to downweight outliers
-  π = perspective projection
-```
+where $w_{ij} = 1$ if point $j$ is visible in image $i$, $\rho$ is a robust loss (Huber or Cauchy) to downweight outliers, and $\pi$ is the perspective projection. COLMAP solves this with Ceres Solver using Levenberg-Marquardt (LM).
 
-This is a nonlinear least squares problem. COLMAP solves it with Ceres Solver using the Levenberg-Marquardt (LM) algorithm.
+#### Levenberg-Marquardt iteration
 
-**LM iteration**
+Let $\boldsymbol{\theta}$ collect all unknowns (camera poses + 3D points). Linearise residuals $\mathbf{r}(\boldsymbol{\theta})$ around the current estimate:
 
-At each step, linearise the residuals r(θ) around current estimate θ:
+$$\mathbf{r}(\boldsymbol{\theta} + \Delta\boldsymbol{\theta}) \approx \mathbf{r}(\boldsymbol{\theta}) + \mathbf{J}\,\Delta\boldsymbol{\theta}, \qquad \mathbf{J} = \frac{\partial \mathbf{r}}{\partial \boldsymbol{\theta}}$$
 
-```
-r(θ + Δθ) ≈ r(θ) + J Δθ
+Solve the **normal equations** for the update $\Delta\boldsymbol{\theta}$:
 
-where J = ∂r/∂θ  (Jacobian)
-```
+$$\bigl(\mathbf{J}^\top \mathbf{J} + \lambda\, \mathbf{I}\bigr)\, \Delta\boldsymbol{\theta} = -\mathbf{J}^\top \mathbf{r}$$
 
-Solve the normal equations for Δθ:
+The damping parameter $\lambda$ interpolates between Gauss-Newton ($\lambda \to 0$, fast near the optimum) and gradient descent ($\lambda \to \infty$, stable far from the optimum). $\lambda$ is increased on a bad step and decreased on a good step.
 
-```
-(JᵀJ + λ I) Δθ = -Jᵀ r
+#### Schur complement trick
 
-where λ is the damping parameter (large λ → gradient descent; small λ → Gauss-Newton)
-```
+$\mathbf{J}^\top\mathbf{J}$ has block-sparse structure: each residual $r_{ij}$ depends only on camera $i$ and point $j$, never on two cameras or two points. Partition $\boldsymbol{\theta} = (\mathbf{c}, \mathbf{p})$ (cameras, points):
 
-**Schur complement trick for efficiency**
+$$\begin{pmatrix} \mathbf{B} & \mathbf{E} \\ \mathbf{E}^\top & \mathbf{C} \end{pmatrix} \begin{pmatrix} \Delta\mathbf{c} \\ \Delta\mathbf{p} \end{pmatrix} = \begin{pmatrix} -\mathbf{b}_1 \\ -\mathbf{b}_2 \end{pmatrix}$$
 
-The Jacobian J has a block-sparse structure: each residual depends on one camera and one point, never on two cameras or two points simultaneously. This gives JᵀJ a block-arrow structure. Use the Schur complement to eliminate point variables and solve only for camera variables first (much smaller system), then back-substitute for points.
+where $\mathbf{B}$ is the camera-camera block, $\mathbf{C}$ is the point-point block (block-diagonal), and $\mathbf{E}$ is the camera-point coupling. Eliminate $\Delta\mathbf{p}$ via the **Schur complement**:
 
-```
-[B  E ] [Δc]   [-b₁]
-[Eᵀ C ] [Δp] = [-b₂]
+$$\underbrace{(\mathbf{B} - \mathbf{E}\mathbf{C}^{-1}\mathbf{E}^\top)}_{\text{Schur complement}} \Delta\mathbf{c} = -\mathbf{b}_1 + \mathbf{E}\mathbf{C}^{-1}\mathbf{b}_2$$
 
-Schur complement:  (B - E C⁻¹ Eᵀ) Δc = -b₁ + E C⁻¹ b₂
-```
-
-where B = camera-camera block, C = point-point block (diagonal), E = camera-point coupling.
-
-C⁻¹ is trivial because C is block-diagonal (each 3D point only appears in its own block).
+$\mathbf{C}^{-1}$ is trivial because $\mathbf{C}$ is block-diagonal (each 3D point has its own $3 \times 3$ block). Solving for $\Delta\mathbf{c}$ (camera unknowns only) is much cheaper than solving the full system. Then back-substitute to get $\Delta\mathbf{p}$.
 
 ---
 
-### Step 6 — Incremental SfM strategy
+### Step 6 — Incremental SfM Strategy
 
-COLMAP builds the reconstruction incrementally, not all at once:
+COLMAP builds the reconstruction incrementally:
 
-1. Find the best initial image pair: highest number of geometrically-verified matches, baseline not too small (parallax needed for triangulation), not too large (many inliers needed).
-2. Triangulate 3D points from the initial pair.
-3. Register a new image: find its 2D–3D correspondences (2D keypoints matched to already-triangulated 3D points), solve PnP to get the camera pose, run local BA.
-4. Triangulate new 3D points visible in the new camera.
-5. Run global BA every K new images to prevent drift.
-6. Repeat from step 3.
+1. **Seed pair:** find the image pair with the highest number of geometrically-verified matches, sufficient baseline (parallax), and high estimated homography inlier ratio.
+2. **Initialise:** triangulate 3D points from the seed pair via DLT.
+3. **Register:** for each new image, find 2D–3D correspondences to already-triangulated points, solve PnP (below) for its pose, run local BA.
+4. **Triangulate:** create new 3D points visible in the new camera.
+5. **Global BA:** every $K$ new images, run BA over all cameras and points to prevent drift accumulation.
+6. **Repeat** from step 3.
 
-**PnP (Perspective-n-Point)** — Step 3 above: given N known 3D points {X_j} and their 2D observations {x_j} in a new image with known K, recover R and t.
+#### PnP — registering a new camera
 
-EPnP (used by COLMAP and our `localize.py`) expresses each 3D point as a weighted sum of 4 virtual control points:
+Given $N$ known 3D points $\{\mathbf{X}_j\}$ and their 2D observations $\{\mathbf{x}_j\}$ in a new image with known $\mathbf{K}$, recover $\mathbf{R}$ and $\mathbf{t}$.
 
-```
-X_j = Σₖ αⱼₖ c_k,   Σₖ αⱼₖ = 1
-```
+**EPnP** (used in COLMAP and `localize.py`) expresses each 3D point as a weighted sum of 4 virtual control points $\{\mathbf{c}_k\}$:
 
-The control points are chosen as the centroid + 3 principal directions of the 3D point set. The 2D projections give linear constraints on the control point coordinates in camera space. Stack into a 12×12 linear system and solve via SVD. Closed-form O(N) complexity.
+$$\mathbf{X}_j = \sum_{k=0}^{3} \alpha_{jk}\, \mathbf{c}_k, \qquad \sum_{k=0}^{3} \alpha_{jk} = 1$$
+
+Control points: $\mathbf{c}_0 = $ centroid of $\{\mathbf{X}_j\}$; $\mathbf{c}_1, \mathbf{c}_2, \mathbf{c}_3 = $ centroid $\pm$ principal components (PCA). The $\alpha_{jk}$ are the barycentric coordinates (computed analytically from the $\mathbf{X}_j$).
+
+Let $\mathbf{c}_k^c$ be the unknown camera-frame coordinates of control point $k$. Each 2D observation $\mathbf{x}_j$ gives 2 linear equations in the 12 unknowns:
+
+$$\sum_{k=0}^{3} \alpha_{jk}\, c_{k,3}^c \cdot u_j = \sum_{k=0}^{3} \alpha_{jk}\, c_{k,1}^c \cdot f_x + \alpha_{jk}\, c_{k,3}^c \cdot c_x$$
+
+Stack $N$ points into $\mathbf{M} \in \mathbb{R}^{2N \times 12}$ and solve $\mathbf{M}\mathbf{v} = \mathbf{0}$ via SVD. For $N \geq 6$ the null space is 1-dimensional; for smaller $N$ enforce rigidity constraints (known inter-control-point distances). Recover $\mathbf{R}$ and $\mathbf{t}$ from the found $\{\mathbf{c}_k^c\}$ via Procrustes:
+
+$$\bigl[\mathbf{c}_1^c - \mathbf{c}_0^c \;\big|\; \mathbf{c}_2^c - \mathbf{c}_0^c \;\big|\; \mathbf{c}_3^c - \mathbf{c}_0^c\bigr] = \mathbf{R}\,\bigl[\mathbf{c}_1 - \mathbf{c}_0 \;\big|\; \mathbf{c}_2 - \mathbf{c}_0 \;\big|\; \mathbf{c}_3 - \mathbf{c}_0\bigr]$$
+
+EPnP runs in $O(N)$ — linear in the number of correspondences.
 
 ---
 
 ## COLMAP — Multi-View Stereo (MVS)
 
-MVS takes the sparse SfM reconstruction as input and produces a dense point cloud or depth map per image.
+MVS takes the sparse SfM reconstruction as input and produces a dense depth map (and thus a dense point cloud) per image.
 
-### Patch Match Stereo
+### PatchMatch Stereo
 
-COLMAP's MVS uses PatchMatch, which initialises per-pixel depth and normal hypotheses randomly and iteratively propagates good hypotheses to neighbours.
+COLMAP MVS uses PatchMatch: initialise per-pixel depth $d_p$ and surface normal $\mathbf{n}_p$ randomly, then iteratively propagate good hypotheses to neighbours.
 
-**Depth map estimation for a reference image r**
+#### Photo-consistency: Normalised Cross-Correlation (NCC)
 
-For each pixel p in image r, we want to find depth d_p and surface normal n_p such that the patch around p has maximum photo-consistency with its projections in source images {s}.
+For pixel $\mathbf{p}$ in reference image $r$, project to source image $s$ at depth $d$:
 
-**Photo-consistency: Normalised Cross-Correlation (NCC)**
+$$\mathbf{p}'_s = \pi\!\left(\mathbf{K}_s\,[\mathbf{R}_s \mid \mathbf{t}_s]\,\pi^{-1}(\mathbf{p},\, d,\, \mathbf{K}_r,\, \mathbf{R}_r,\, \mathbf{t}_r)\right)$$
 
-For a pixel p in reference image r and its projection p'_s in source image s at depth d:
+where $\pi^{-1}(\mathbf{p}, d, \cdot)$ back-projects pixel $\mathbf{p}$ at depth $d$ into world coordinates. NCC over a $w \times w$ patch $\mathcal{W}(\mathbf{p})$:
 
-```
-p'_s = π(K_s [R_s | t_s] π⁻¹(p, d, K_r, R_r, t_r))
-```
+$$\operatorname{NCC}(\mathbf{p},\, \mathbf{p}'_s) = \frac{\displaystyle\sum_{\mathbf{q} \in \mathcal{W}(\mathbf{p})} \bigl(I_r(\mathbf{q}) - \mu_r\bigr)\bigl(I_s(\mathbf{H}\mathbf{q}) - \mu_s\bigr)}{\sigma_r\, \sigma_s\, |\mathcal{W}|}$$
 
-where π⁻¹(p, d, K, R, t) back-projects pixel p at depth d into 3D world coords.
+The homography $\mathbf{H}$ maps the reference patch to the source view, accounting for surface orientation via the depth-normal hypothesis $(d, \mathbf{n})$:
 
-NCC score over a w×w patch:
+$$\mathbf{H} = \mathbf{K}_s \left(\mathbf{R}_s - \frac{\mathbf{t}_s\, \mathbf{n}^\top}{d}\right) \mathbf{R}_r^\top\, \mathbf{K}_r^{-1}$$
 
-```
-NCC(p, p'_s) = Σ_{q∈W(p)} (I_r(q) - μ_r)(I_s(H·q) - μ_s) / (σ_r · σ_s · |W|)
+This is the standard planar homography formula. When $\mathbf{n}$ is the true surface normal and $d$ the true depth, $\mathbf{H}$ correctly warps the patch to account for surface tilt.
 
-where H is the homography induced by the depth-normal hypothesis (d, n)
-```
-
-The homography H maps patches between views accounting for surface orientation:
+#### PatchMatch iteration
 
 ```
-H = K_s (R_s - t_s nᵀ/d) Rᵣᵀ K_r⁻¹
-```
+for each pixel p (forward pass: top-left → bottom-right):
+    # 1. Spatial propagation — try neighbours' hypotheses
+    (d, n) = argmax NCC over {current, left-neighbour, top-neighbour}
 
-**PatchMatch iteration**
-
-```
-for each pixel p:
-    # Spatial propagation: try neighbours' hypotheses
-    (d, n) = best of {current, left-neighbour, upper-neighbour}
-    
-    # Random search: perturb current hypothesis
-    for i in range(max_search):
-        d_new = d + δ_d · 2^(-i)   # halving search radius
-        n_new = perturb(n, δ_n · 2^(-i))
-        if photoconsistency(d_new, n_new) > photoconsistency(d, n):
+    # 2. Random refinement — perturb current hypothesis
+    for i = 0, 1, ..., max_search:
+        d_new = d + δ_d · 2^(−i)          # halving search radius
+        n_new = perturb(n, δ_n · 2^(−i))  # shrinking angular perturbation
+        if NCC(d_new, n_new) > NCC(d, n):
             (d, n) = (d_new, n_new)
+
+# Backward pass: bottom-right → top-left (same logic)
 ```
 
-Alternate between forward (top-left to bottom-right) and backward passes. Converges in ~5 iterations.
+Alternating forward and backward passes converge in $\sim 5$ iterations. Good hypotheses propagate quickly across uniform regions.
 
-**Multi-view aggregation**
+#### Depth map fusion
 
-Instead of pairwise NCC, COLMAP computes the geometric consistency score across all source views and uses the median depth to reject occluded hypotheses.
-
-**Depth map fusion**
-
-Individual per-image depth maps are fused into a global point cloud. For each depth estimate (p, d), back-project to 3D. Accept if the point is consistent (within threshold) with at least M other depth maps that observe it. This removes floating artifacts and strengthens accurate estimates.
+Per-image depth maps are fused into a global point cloud. A depth estimate $(\mathbf{p}, d)$ is accepted if it is consistent (within a pixel threshold) with at least $M$ other depth maps that observe the same 3D point. Consistency is checked by reprojecting the back-projected 3D point into neighbouring views and comparing depths. This suppresses floaters and reinforces accurate estimates.
 
 ---
 
 ## PnP + RANSAC — used in `localize.py`
 
-Given N 2D–3D correspondences {(x_i, X_i)}, find R and t such that:
+Given $N$ 2D–3D correspondences $\{(\mathbf{x}_i, \mathbf{X}_i)\}$, find $\mathbf{R}$ and $\mathbf{t}$ such that:
 
-```
-λ_i x_i = K (R X_i + t)   for all i
-```
+$$\lambda_i\, \mathbf{x}_i = \mathbf{K}\,(\mathbf{R}\,\mathbf{X}_i + \mathbf{t}) \quad \forall\, i$$
 
-**EPnP (Efficient PnP)** — what `cv2.SOLVEPNP_EPNP` implements:
-
-Express each 3D world point as a weighted combination of 4 control points {c_j}:
-
-```
-X_i = Σⱼ α_ij c_j,   with Σⱼ α_ij = 1  (barycentric coordinates)
-```
-
-Control points chosen as: c_0 = centroid of {X_i}, c_1,c_2,c_3 = centroid ± principal components (from PCA of {X_i}).
-
-The unknown camera-frame coordinates of control points {c_j^c} satisfy:
-
-```
-x_i = π(Σⱼ α_ij c_j^c) = π(Σⱼ α_ij [c_jx^c, c_jy^c, c_jz^c]ᵀ)
-```
-
-Each observation gives 2 linear equations in the 12 unknowns (4 control points × 3 coords). Stack N points → M x = 0, M ∈ ℝ^(2N×12). Solve via SVD: solution lies in null space of M. For N≥6 the null space is 1-dimensional; for N<6 use additional constraints from the known distances between control points (they must be rigid).
-
-Once {c_j^c} found, recover R and t by:
-```
-R, t from: [c₁^c - c₀^c | c₂^c - c₀^c | c₃^c - c₀^c] = R [c₁ - c₀ | c₂ - c₀ | c₃ - c₀]
-→ solved by Procrustes / SVD
-```
-
-**RANSAC wrapper**
+This is solved by wrapping EPnP (described above) in a RANSAC loop:
 
 ```
 best_inliers = []
 for i in range(max_iters):
-    sample = random.sample(correspondences, 6)   # min for EPnP
-    R, t = EPnP(sample)
-    inliers = [j for j in all if reprojection_error(j, R, t) < threshold]
+    sample = random.sample(correspondences, 6)   # minimum for EPnP
+    R, t   = EPnP(sample)
+    inliers = [j for j in all_correspondences
+               if reprojection_error(j, R, t) < threshold]
     if len(inliers) > len(best_inliers):
         best_inliers = inliers
         best_R, best_t = R, t
 
-# Refine with all inliers (non-linear LM)
-R, t = refine_LM(best_inliers, best_R, best_t)
+# Non-linear refinement over all inliers
+R, t = Levenberg_Marquardt(best_inliers, best_R, best_t)
 ```
 
-Reprojection error threshold in our code: `--ransac_thresh 12.0` pixels. Tighter (5px) is more accurate but requires more inliers to succeed.
+The reprojection error for correspondence $(\mathbf{x}_i, \mathbf{X}_i)$:
+
+$$e_i = \left\|\mathbf{x}_i - \pi\!\bigl(\mathbf{K}(\mathbf{R}\,\mathbf{X}_i + \mathbf{t})\bigr)\right\|_2$$
+
+In our code: `--ransac_thresh 12.0` px (relaxed for low-inlier scenarios). Tighter (5 px) gives more accurate poses but requires higher inlier count to succeed.
 
 ---
 
-## Key papers
+## Key Papers
 
-| Topic | Paper |
+| Topic | Citation |
 |---|---|
-| SIFT | Lowe, "Distinctive image features from scale-invariant keypoints", IJCV 2004 |
-| COLMAP SfM | Schönberger & Frahm, "Structure-from-Motion Revisited", CVPR 2016 |
-| COLMAP MVS | Schönberger et al., "Pixelwise View Selection for Unstructured Multi-View Stereo", ECCV 2016 |
-| EPnP | Lepetit, Moreno-Noguer & Fua, "EPnP: An Accurate O(n) Solution to the PnP Problem", IJCV 2009 |
-| Bundle Adjustment | Triggs et al., "Bundle Adjustment — A Modern Synthesis", ICCV 1999 |
-| LoFTR | Sun et al., "LoFTR: Detector-Free Local Feature Matching with Transformers", CVPR 2021 |
-| OnePose++ | He et al., "OnePose++: Keypoint-Free One-Shot Object Pose Estimation without CAD Models", NeurIPS 2022 |
-| SuperPoint | DeTone et al., "SuperPoint: Self-Supervised Interest Point Detection and Description", CVPRW 2018 |
-| SuperGlue | Sarlin et al., "SuperGlue: Learning Feature Matching with Graph Neural Networks", CVPR 2020 |
-| HLoc | Sarlin et al., "From Coarse to Fine: Robust Hierarchical Localization at Large Scale", CVPR 2019 |
-| PatchMatch | Bleyer et al., "PatchMatch Stereo", BMVC 2011 |
-| RANSAC | Fischler & Bolles, "Random Sample Consensus", Commun. ACM 1981 |
+| SIFT | Lowe, *Distinctive image features from scale-invariant keypoints*, IJCV 2004 |
+| COLMAP SfM | Schönberger & Frahm, *Structure-from-Motion Revisited*, CVPR 2016 |
+| COLMAP MVS | Schönberger et al., *Pixelwise View Selection for Unstructured Multi-View Stereo*, ECCV 2016 |
+| EPnP | Lepetit, Moreno-Noguer & Fua, *EPnP: An Accurate O(n) Solution to the PnP Problem*, IJCV 2009 |
+| Bundle Adjustment | Triggs et al., *Bundle Adjustment — A Modern Synthesis*, ICCV 1999 |
+| LoFTR | Sun et al., *LoFTR: Detector-Free Local Feature Matching with Transformers*, CVPR 2021 |
+| OnePose++ | He et al., *OnePose++: Keypoint-Free One-Shot Object Pose Estimation without CAD Models*, NeurIPS 2022 |
+| SuperPoint | DeTone et al., *SuperPoint: Self-Supervised Interest Point Detection and Description*, CVPRW 2018 |
+| SuperGlue | Sarlin et al., *SuperGlue: Learning Feature Matching with Graph Neural Networks*, CVPR 2020 |
+| HLoc | Sarlin et al., *From Coarse to Fine: Robust Hierarchical Localization at Large Scale*, CVPR 2019 |
+| PatchMatch | Bleyer et al., *PatchMatch Stereo*, BMVC 2011 |
+| RANSAC | Fischler & Bolles, *Random Sample Consensus*, Commun. ACM 1981 |
 
 ---
 
-## Useful codebases
+## Useful Codebases
 
 | Repo | What it gives you |
 |---|---|
-| `https://github.com/colmap/colmap` | COLMAP source — read `src/sfm/` for incremental SfM and `src/mvs/` for PatchMatch |
-| `https://github.com/zju3dv/OnePose_Plus_Plus` | OnePose++ reference implementation — LoFTR-based SfM + 2D-3D matching network |
-| `https://github.com/cvg/Hierarchical-Localization` | HLoc — coarse-to-fine visual localization, good reference for pose-guided search |
-| `https://github.com/kornia/kornia` | Differentiable computer vision — GPU SIFT, LoFTR, geometric transforms |
-| `https://github.com/mihaidusmanu/d2-net` | D2-Net — detect-and-describe jointly, stronger than SIFT on low-texture |
-| `https://github.com/magicleap/SuperGluePretrainedNetwork` | SuperPoint + SuperGlue — current strong baseline for learned matching |
-| `https://github.com/fabio-sim/LightGlue-ONNX` | LightGlue ONNX export — fast learned matching deployable on edge |
-| `https://github.com/open3d/open3d` | Open3D — statistical outlier removal, point cloud visualisation |
+| [colmap/colmap](https://github.com/colmap/colmap) | COLMAP source — `src/sfm/` for incremental SfM, `src/mvs/` for PatchMatch |
+| [zju3dv/OnePose_Plus_Plus](https://github.com/zju3dv/OnePose_Plus_Plus) | OnePose++ reference — LoFTR SfM + 2D-3D matching network |
+| [cvg/Hierarchical-Localization](https://github.com/cvg/Hierarchical-Localization) | HLoc — coarse-to-fine visual localization, pose-guided search reference |
+| [kornia/kornia](https://github.com/kornia/kornia) | Differentiable CV — GPU SIFT, LoFTR, geometric transforms |
+| [mihaidusmanu/d2-net](https://github.com/mihaidusmanu/d2-net) | D2-Net — detect-and-describe jointly, stronger than SIFT on low-texture |
+| [magicleap/SuperGluePretrainedNetwork](https://github.com/magicleap/SuperGluePretrainedNetwork) | SuperPoint + SuperGlue — strong learned matching baseline |
+| [fabio-sim/LightGlue-ONNX](https://github.com/fabio-sim/LightGlue-ONNX) | LightGlue ONNX — fast learned matching for edge deployment |
+| [open3d/open3d](https://github.com/open3d/open3d) | Open3D — statistical outlier removal, point cloud visualisation |
