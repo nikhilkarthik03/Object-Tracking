@@ -1,8 +1,11 @@
+from plyfile import PlyData
 import argparse
 import sqlite3
 import numpy as np
 import struct
 import os
+
+from scipy.spatial import cKDTree
 
 
 # =============================
@@ -60,6 +63,35 @@ def load_descriptors(database_path):
 
 
 # =============================
+# -------- PLY LOADING --------
+# =============================
+
+def load_ply_xyz(path):
+    """
+    Load XYZ points from a PLY file (ASCII or binary).
+    Returns: (N, 3) numpy array
+    """
+    ply = PlyData.read(path)
+
+    if 'vertex' not in ply:
+        raise ValueError(f"{path} does not contain vertex data")
+
+    v = ply['vertex']
+
+    # Validate fields
+    fields = v.data.dtype.names
+    for key in ('x', 'y', 'z'):
+        if key not in fields:
+            raise ValueError(f"Missing '{key}' in PLY vertex fields: {fields}")
+
+    xyz = np.vstack([v['x'], v['y'], v['z']]).T
+    return xyz
+
+def build_spatial_filter(pruned_xyz):
+    return cKDTree(pruned_xyz)
+
+
+# =============================
 # -------- MAP BUILD ----------
 # =============================
 
@@ -69,16 +101,25 @@ class MapPoint:
         self.descs = []
 
 
-def build_map(points3D, descriptors, min_views):
+def build_map(points3D, descriptors, min_views, tree=None, radius=None):
     map_points = {}
 
     for pid, pdata in points3D.items():
+        xyz = pdata["xyz"]
+
+        # --- NEW: spatial filtering ---
+        if tree is not None:
+            dist, _ = tree.query(xyz, k=1)
+            if dist > radius:
+                continue
+        # --------------------------------
+
         track = pdata["track"]
 
         if len(track) < min_views:
             continue
 
-        mp = MapPoint(pdata["xyz"])
+        mp = MapPoint(xyz)
 
         for (img_id, kp_idx) in track:
             if img_id not in descriptors:
@@ -96,23 +137,13 @@ def build_map(points3D, descriptors, min_views):
 
 
 def select_diverse_descriptors(descs_list, max_k=4):
-    """
-    FIX (Bug 1): Instead of collapsing all observations into one mean vector
-    (which loses viewpoint diversity), we keep up to max_k descriptors that
-    are maximally spread from each other via greedy farthest-point selection.
-
-    This means a 3D point seen from very different angles will have multiple
-    representatives in the index, dramatically improving match recall.
-    """
     descs = np.array(descs_list, dtype=np.float32)
 
     if len(descs) <= max_k:
         return descs
 
-    # Greedy farthest-point sampling
     selected = [0]
     for _ in range(max_k - 1):
-        # Distance from each descriptor to the nearest already-selected one
         dists = np.array([
             min(np.linalg.norm(descs[i] - descs[s]) for s in selected)
             for i in range(len(descs))
@@ -125,14 +156,8 @@ def select_diverse_descriptors(descs_list, max_k=4):
 
 
 def aggregate_descriptors(map_points, normalize=True, max_k=4):
-    """
-    FIX (Bug 1): Return one row per (point, descriptor) pair instead of one
-    row per point. The returned point_ids array maps each descriptor row back
-    to its 3D point so localize.py can look up xyzs[idx_db] correctly.
-    """
     all_descs = []
     all_xyzs = []
-    all_pids = []
 
     for pid, mp in map_points.items():
         diverse = select_diverse_descriptors(mp.descs, max_k=max_k)
@@ -142,11 +167,10 @@ def aggregate_descriptors(map_points, normalize=True, max_k=4):
                 d = d / (np.linalg.norm(d) + 1e-8)
             all_descs.append(d.astype(np.float32))
             all_xyzs.append(mp.xyz.astype(np.float32))
-            all_pids.append(pid)
 
     return (
-        np.vstack(all_descs),   # (M, 128)  — M >= N (multiple descs per point)
-        np.vstack(all_xyzs),    # (M, 3)    — xyz repeated for each descriptor
+        np.vstack(all_descs),
+        np.vstack(all_xyzs),
     )
 
 
@@ -155,20 +179,19 @@ def aggregate_descriptors(map_points, normalize=True, max_k=4):
 # =============================
 
 def main():
-    parser = argparse.ArgumentParser(description="Stage 2: Build 3D map from COLMAP outputs")
+    parser = argparse.ArgumentParser(description="Build 3D map with optional pruning")
 
-    parser.add_argument("--sparse_path", required=True,
-                        help="Path to COLMAP sparse folder (e.g. sparse/0)")
-    parser.add_argument("--database_path", required=True,
-                        help="Path to COLMAP database.db")
-    parser.add_argument("--output_path", required=True,
-                        help="Output .npz file")
-    parser.add_argument("--min_views", type=int, default=3,
-                        help="Minimum observations per 3D point (raised from 2 to 3)")
-    parser.add_argument("--max_descs_per_point", type=int, default=4,
-                        help="Max diverse descriptors to keep per 3D point")
-    parser.add_argument("--no_normalize", action="store_true",
-                        help="Disable descriptor normalization")
+    parser.add_argument("--sparse_path", required=True)
+    parser.add_argument("--database_path", required=True)
+    parser.add_argument("--output_path", required=True)
+
+    parser.add_argument("--min_views", type=int, default=3)
+    parser.add_argument("--max_descs_per_point", type=int, default=4)
+    parser.add_argument("--no_normalize", action="store_true")
+
+    # NEW
+    parser.add_argument("--pruned_ply", default=None)
+    parser.add_argument("--radius", type=float, default=0.01)
 
     args = parser.parse_args()
 
@@ -177,28 +200,42 @@ def main():
     print("Loading points3D...")
     points3D = read_points3D_binary(points_path)
 
+    print(f"Total COLMAP points: {len(points3D)}")
+
     print("Loading descriptors...")
     descriptors = load_descriptors(args.database_path)
 
+    tree = None
+    if args.pruned_ply is not None:
+        print("Loading pruned PLY...")
+        pruned_xyz = load_ply_xyz(args.pruned_ply)
+        print(f"Pruned PLY points: {len(pruned_xyz)}")
+
+        tree = build_spatial_filter(pruned_xyz)
+
     print("Building map...")
-    map_points = build_map(points3D, descriptors, args.min_views)
+    map_points = build_map(
+        points3D,
+        descriptors,
+        args.min_views,
+        tree=tree,
+        radius=args.radius
+    )
 
-    print(f"Valid map points: {len(map_points)}")
+    print(f"Points after filtering: {len(map_points)}")
 
-    print("Aggregating descriptors (diverse multi-descriptor per point)...")
+    print("Aggregating descriptors...")
     descs, xyzs = aggregate_descriptors(
         map_points,
         normalize=not args.no_normalize,
         max_k=args.max_descs_per_point,
     )
 
-    print("Saving output...")
+    print("Saving...")
     np.savez_compressed(args.output_path, xyzs=xyzs, descs=descs)
 
     print(f"Saved to {args.output_path}")
-    print(f"xyzs shape: {xyzs.shape}")
-    print(f"descs shape: {descs.shape}")
-    print(f"(Multiple rows per 3D point — each descriptor indexes back to its xyz)")
+    print(f"xyzs: {xyzs.shape}, descs: {descs.shape}")
 
 
 if __name__ == "__main__":

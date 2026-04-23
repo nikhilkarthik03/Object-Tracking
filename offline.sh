@@ -53,7 +53,7 @@ fi
 # -----------------------------
 echo "Matching..."
 
-colmap exhaustive_matcher \
+colmap sequential_matcher \
     --database_path "$CURR_DIR/database.db"
 
 # -----------------------------
@@ -63,13 +63,10 @@ echo "Sparse reconstruction..."
 
 mkdir -p "$CURR_DIR/sparse"
 
-colmap mapper \
+colmap global_mapper \
     --database_path "$CURR_DIR/database.db" \
     --image_path "$CURR_DIR/frames" \
-    --output_path "$CURR_DIR/sparse" \
-    --Mapper.num_threads 8 \
-    --Mapper.min_num_matches 15 \
-    --Mapper.init_min_tri_angle 4
+    --output_path "$CURR_DIR/sparse"
 
 # -----------------------------
 # Export sparse as PLY (fast semi-dense option)

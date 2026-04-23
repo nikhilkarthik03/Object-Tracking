@@ -7,8 +7,8 @@ echo "Tracker Running"
 WORKDIR="$1"
 QUERY_DIR="$2"
 
-PYTHON="/home/datascience-mini/miniconda3/envs/object-tracking/bin/python3"
-
+# PYTHON="/home/datascience-mini/miniconda3/envs/object-tracking/bin/python3"
+PYTHON="python"
 # -----------------------------
 # Validate inputs
 # -----------------------------
@@ -21,8 +21,8 @@ if [ -z "$WORKDIR" ] || [ -z "$QUERY_DIR" ]; then
     exit 1
 fi
 
-if [ ! -d "$WORKDIR/images" ]; then
-    echo "Error: $WORKDIR/images not found"
+if [ ! -d "$WORKDIR/frames" ]; then
+    echo "Error: $WORKDIR/frames not found"
     exit 1
 fi
 
@@ -51,8 +51,8 @@ if [ ! -f "$WORKDIR/map.npz" ]; then
         --sparse_path "$WORKDIR/sparse/0" \
         --database_path "$WORKDIR/database.db" \
         --output_path "$WORKDIR/map.npz" \
-        --min_views 3 \
-        --max_descs_per_point 4
+        --pruned_ply "$WORKDIR/pruned.ply" \
+        --radius 0.01
 else
     echo "Skipping map build (map.npz already exists)"
 fi
@@ -60,7 +60,7 @@ fi
 # -----------------------------
 # Stage 3: Localize all images
 # -----------------------------
-FRAMES_DIR="$WORKDIR/frames"
+FRAMES_DIR="$WORKDIR/images"
 mkdir -p "$FRAMES_DIR"
 
 IMAGE_LIST=$(find "$QUERY_DIR" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) | sort)
